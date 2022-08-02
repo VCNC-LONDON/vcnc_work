@@ -1,0 +1,191 @@
+WITH 
+
+date_dummy AS (
+    SELECT 
+        d AS date_kr,
+    FROM UNNEST(GENERATE_DATE_ARRAY(DATE("2022-01-19") , CURRENT_DATE("Asia/Seoul")- 1 , INTERVAL 1 DAY)) AS d
+),
+
+driver AS (
+    SELECT  
+        d.id AS driver_id,
+        identity_certification_id,
+        d.name AS driver_name,
+        authorized_vehicle_id AS vehicle_id,
+        agency_id,
+        type AS driver_type,
+        da.code AS agecny_code,
+        da.name AS agency_name,
+    FROM `kr-co-vcnc-tada.tada.driver` AS d
+    LEFT JOIN `kr-co-vcnc-tada.tada.driver_agency` AS da 
+    ON da.id = d.agency_id
+    WHERE d.type IN ("NXT", "PREMIUM")
+    AND da.code != "VC"
+),
+
+ban_record AS (
+    SELECT 
+        driver_id,
+        DATETIME(start_at, "Asia/Seoul") AS ban_start_dt,
+        DATETIME(end_at,"Asia/Seoul") AS ban_end_dt,
+        IF(ARRAY_LENGTH(SPLIT(start_comment, "|")) >= 2,SPLIT(start_comment, "|")[SAFE_ORDINAL(1)],NULL) AS ban_reservation_id,
+        IF(ARRAY_LENGTH(SPLIT(start_comment, "|")) >= 2,SPLIT(start_comment, "|")[SAFE_ORDINAL(2)],SPLIT(start_comment, "|")[SAFE_ORDINAL(1)]) AS ban_reason,
+    FROM 
+        `kr-co-vcnc-tada.tada.driver_ban_record`
+    WHERE
+        type = "RIDE_RESERVATION"
+),
+
+reserve_accept_history AS (
+    SELECT 
+        driver_id, 
+        ride_reservation_id, 
+        DATETIME(created_at, "Asia/Seoul") AS accept_dt,
+        DATETIME(cancelled_at, "Asia/Seoul") AS cancel_dt,
+        ROW_NUMBER() OVER (PARTITION BY ride_reservation_id ORDER BY created_at DESC) AS accept_order_desc
+    FROM `kr-co-vcnc-tada.tada.ride_reservation_acceptance`
+),
+
+reservation AS (
+    SELECT 
+        ride_date_kr,
+        reserve_date_kr, 
+        user_id, 
+        rah.driver_id AS driver_id,
+        rah.accept_dt AS driver_accept_dt,
+        rah.cancel_dt AS driver_reject_dt,
+        rah.accept_order_desc, 
+        reservation_id, 
+        ride_id, 
+        ride_status, 
+        reservation_status, 
+        r.driver_id AS determined_driver_id, 
+        DATETIME(accept_expiry, "Asia/Seoul") AS accept_expire_dt,
+        DATETIME(expected_pick_up_at, "Asia/Seoul") AS expected_pick_up_dt,
+        DATETIME(created_at, "Asia/Seoul") AS reservation_created_dt,
+        DATETIME(accepted_at, "Asia/Seoul") AS reservation_accept_dt,
+        DATETIME(cancel_at, "Asia/Seoul") AS reservation_cancel_dt,
+        DATETIME(ride_arrived_at, "Asia/Seoul") AS ride_arrive_dt,
+        cancellation_cause AS reservation_cancellation_cause, 
+        estimate_total_fee 
+    FROM reserve_accept_history  AS rah 
+    LEFT JOIN  `kr-co-vcnc-tada.tada_reservation.reservation_base` AS r
+    ON rah.ride_reservation_id = r.reservation_id
+),
+
+
+ban_doubt AS (
+    SELECT 
+        IFNULL(DATE(driver_reject_dt), ride_date_kr) AS std_date_kr,
+        ride_date_kr,
+        r.driver_id,
+        driver_name,
+        (CASE
+            WHEN driver_type = "NXT" THEN "넥스트"
+            WHEN driver_type = "PREMIUM" THEN "플러스"
+        END) AS driver_type,
+        agecny_code ,
+        driver_accept_dt,
+        driver_reject_dt,
+        (CASE
+            WHEN REGEXP_CONTAINS(agency_name, "개인") THEN "개인"
+            ELSE "법인"
+        END) AS agency_type,
+        IF(REGEXP_CONTAINS(agency_name, "개인"), "",agency_name) AS agency_name,
+        (CASE
+            WHEN 
+            # 도착 시간이 10~30분 사이거나 30분을 넘고 운행 완료한 경우면 지각이다
+            # 이 때 기사는 예약금의 20%를 배상한다.
+                # 도착 완료 처리는 되었는데,
+                r.driver_id = determined_driver_id AND ride_arrive_dt IS NOT NULL
+                AND (
+                    # 출발시간 10분 이후 ~ 30분 미만 사이에 도착했거나 
+                    (TIMESTAMP_DIFF(ride_arrive_dt, expected_pick_up_dt, SECOND) >= 600 AND TIMESTAMP_DIFF(ride_arrive_dt, expected_pick_up_dt, SECOND) < 1800) 
+                    # 도착 시간이 30분은 넘겼으나 운행은 완료한 경우
+                    OR (TIMESTAMP_DIFF(ride_arrive_dt, expected_pick_up_dt, SECOND) >= 1800 AND ride_status = "DROPPED_OFF")
+                )
+                THEN "late"
+
+            WHEN 
+            # 도착 시간이 30분을 넘겼거나 존재하지 않으면 노쇼다
+            # 이 경우 기사가 예약금 100%를 배상한다
+                # 취소하지 않았거나, 취소가 됐다면 예정 탑승시간 이후에 된 경우
+                r.driver_id = determined_driver_id AND (reservation_cancel_dt IS NULL OR reservation_cancel_dt >= expected_pick_up_dt) 
+                AND(
+                    # 출발시간보다 30분이 지나서 도착했고 운행이 안된 경우
+                    (TIMESTAMP_DIFF(ride_arrive_dt, expected_pick_up_dt, SECOND) >= 1800 AND ride_status != "DROPPED_OFF") 
+                    # 아예 도착 기록이 없는 경우
+                    OR ride_arrive_dt IS NULL
+                ) THEN "noshow"
+
+            WHEN 
+            # 탑승 시간 기준 1시간 전에 취소하는 경우 수락 후 취소 1시간 초과이다.
+            # 이 경우 드라이버는 30일 정지를 먹는다.
+                DATETIME_DIFF(expected_pick_up_dt, driver_reject_dt, SECOND) > 3600 THEN "cancel_before_hour"
+            WHEN
+            # 탑승 시간 기준 1시간 이내에 드라이버가 취소하는 경우 수락 후 취소 1시간 이내이다.
+            # 이 경우 드버는 30일 정지 + 예약금 100%를 배상한다.
+                # 예약 취소가 유저가 아니며
+                reservation_cancellation_cause != "RIDER_CANCELLED" 
+                # 취소 시간이 탑승 시각으로 부터 1시간 이내인 경우
+                AND DATETIME_DIFF(expected_pick_up_dt, IF(r.driver_id != determined_driver_id , driver_reject_dt, reservation_cancel_dt), SECOND ) BETWEEN 0 AND 3600 THEN "cancel_after_hour"
+        END) AS ban_type,
+        user_id,
+        reservation_id,
+        ride_id,
+        reservation_status,
+        ride_status,
+        determined_driver_id,
+        accept_expire_dt,
+        expected_pick_up_dt,
+        reservation_created_dt,
+        reservation_accept_dt,
+        reservation_cancel_dt,
+        ride_arrive_dt,
+        reservation_cancellation_cause,
+        estimate_total_fee,
+    FROM reservation AS r
+    LEFT JOIN driver AS d
+    ON r.driver_id = d.driver_id
+)
+
+SELECT 
+    dd.date_kr,
+    bd.driver_id,
+    bd.driver_name,
+    driver_accept_dt,
+    IF(bd.driver_id = determined_driver_id, reservation_cancel_dt, driver_reject_dt) AS driver_reject_dt,
+    driver_type,
+    agency_type,
+    agency_name,
+    ban_type,
+    IF(ban_type like "%cancel%", "auto", "manual") AS is_auto_ban,
+    reservation_id,
+    IF(bd.driver_id = determined_driver_id,ride_id,NULL) AS ride_id,
+    -- determined_driver_id,
+    reservation_status,
+    IF(bd.driver_id = determined_driver_id, ride_status, NULL) AS ride_status,
+    -- accept_expire_dt,
+    expected_pick_up_dt,
+    reservation_created_dt ,
+    IF(bd.driver_id = determined_driver_id, reservation_accept_dt , NULL) AS reservation_accept_dt,
+    IF(bd.driver_id = determined_driver_id, ride_arrive_dt , NULL) AS ride_arrive_dt,
+    FLOOR(DATETIME_DIFF(IF(bd.driver_id = determined_driver_id, ride_arrive_dt , NULL), expected_pick_up_dt, SECOND)/60) AS late_second,
+    reservation_cancel_dt ,
+    reservation_cancellation_cause,
+    estimate_total_fee,
+    FLOOR((CASE
+        WHEN ban_type = "cancel_after_hour" THEN  estimate_total_fee 
+        WHEN ban_type = "cancel_before_hour" THEN  0  
+        WHEN ban_type = "late" THEN  estimate_total_fee * 0.2 
+        WHEN ban_type = "noshow" THEN  estimate_total_fee  
+    END)) AS cancel_fee,
+    ban_start_dt,
+    ban_end_dt,
+FROM date_dummy AS dd
+LEFT JOIN ban_doubt AS bd ON dd.date_kr = bd.std_date_kr
+LEFT JOIN ban_record AS br
+ON bd.driver_id = br.driver_id 
+AND (br.ban_reservation_id = bd.reservation_id OR ABS(DATETIME_DIFF(br.ban_start_dt,IFNULL(driver_reject_dt, reservation_cancel_dt), SECOND)) <=2)
+-- WHERE driver_id in ("DNX19420", "DTX88683", "DNX30186", "DNX51595") # 검산용
+
