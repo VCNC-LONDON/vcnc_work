@@ -1,0 +1,36 @@
+WITH
+
+client_firebase AS (
+  SELECT
+    date_kr,
+    user_id,
+    event_name,
+    event_datetime,
+    app_version,
+    (CASE
+      WHEN event_datetime >= "2022-07-18 10:00:00" THEN "2.27 강업(1차 출시)"
+      WHEN event_datetime >= "2022-07-28 17:00:00" THEN "2.28 강업(2차 출시)"
+      ELSE "출시전"
+    END) AS open_div,
+    MAX(IF(e.key = "view_name", e.string_value, NULL)) AS view_name,
+    MAX(IF(e.key = "ride_reservation_id", e.string_value, NULL))AS ride_reservation_id
+  FROM (SELECT * EXCEPT(user_id), MAX(user_id) OVER (PARTITION BY user_pseudo_id) AS user_id FROM `kr-co-vcnc-tada.tada_ext.firebase_app_event` WHERE date_kr >= "2022-07-20"), UNNEST(event_params) AS e  WHERE app_id = "kr.co.vcnc.tada.driver"
+  AND event_name IN ("view_click", "view_impression")
+  AND SAFE_CAST(REPLACE(app_version,".","") AS INT64) >= 2250
+  GROUP BY 1, 2, 3, 4, 5, 6
+  HAVING view_name IN ("RESERVATION_PENDING_NUDGE", "RIDE_RESERVATION_NUDGE_NEW_RESERVATION_SHOW", "RIDE_RESERVATION_NUDGE_NEW_RESERVATION_CLOSE" )
+)
+
+SELECT 
+  date_kr,
+  -- app_version,
+  -- user_id,
+  COUNT(IF(view_name = "RESERVATION_PENDING_NUDGE", event_datetime, NULL)) AS nudge_show_cnt,
+  COUNT(IF(view_name = "RIDE_RESERVATION_NUDGE_NEW_RESERVATION_SHOW", event_datetime, NULL)) AS nudge_open_cnt,
+  COUNT(IF(view_name = "RIDE_RESERVATION_NUDGE_NEW_RESERVATION_CLOSE", event_datetime, NULL)) AS nudge_close_cnt,
+  COUNT(ride_reservation_id) AS cnt
+FROM client_firebase
+-- WHERE app_version = "2.28.0"
+GROUP BY date_kr
+ORDER BY date_kr DESC
+

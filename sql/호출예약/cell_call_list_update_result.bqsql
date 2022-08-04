@@ -1,0 +1,141 @@
+WITH
+
+web_firebase AS (
+  SELECT
+    date_kr,
+    user_id,
+    event_name,
+    event_datetime,
+    MAX(IF(e.key = "page_location", e.string_value, NULL)) AS page_location,
+    MAX(IF(e.key = "component_name", e.string_value, NULL)) AS component_name,
+    MAX(IF(e.key = "query_string", e.string_value, NULL)) AS query_string,
+    MAX(IF(e.key = "reservation_id", e.string_value, NULL)) AS reservation_id,
+    MAX(IF(e.key = "error_code", e.string_value, NULL)) AS error_code,
+    MAX(IF(e.key = "ga_session_id", e.int_value, NULL)) AS ga_session_id
+  FROM (SELECT * EXCEPT(user_id), MAX(user_id) OVER (PARTITION BY user_pseudo_id) AS user_id FROM `kr-co-vcnc-tada.tada_ext.firebase_app_event` WHERE date_kr >= "2022-07-29"), UNNEST(event_params) AS e
+  WHERE app_id = "kr.co.vcnc.tada.driver"
+  AND event_name IN ("web_page_view", "web_click", "web_view_impression" ,"web_page_back")
+  AND CAST(REPLACE(app_version, ".","") AS int64) >= 280
+  GROUP BY 1, 2, 3, 4
+),
+
+web_raw AS (
+  SELECT    
+    date_kr,
+    user_id,  
+    event_name,
+    (CASE
+      # 아래부터는  page_location = "https://web-driver-web.tadatada.com/reservations" 일때만 발생해야 하지만 알 수 없는 이유로 reservations/[id] 인데 찍히는 경우가 있다.
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_click" AND component_name = "RIDE_HISTORY" THEN "ride_history_income"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_page_view" THEN "call_list_income"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_click" AND component_name = "FILTER" THEN "filter_click"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_click" AND component_name = "RECOMMEND_ASC" THEN "filter_recommend_click"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_click" AND component_name = "TIME_ASC" THEN "filter_time_click"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_click" AND component_name = "SURGE_ASC" THEN "filter_surge_click"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_click" AND component_name = "REFRESH" THEN "call_list_refresh_click"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_click" AND component_name = "RESERVATION_CARD" THEN "reserve_select_click"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_click" AND component_name = "APP_BAR_HELP_BUTTON" THEN "call_list_help_click"
+      WHEN page_location = "https://web-driver-web.tadatada.com/reservations" AND event_name = "web_view_impression" THEN "reserve_select_error"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations/%" AND event_name = "web_page_view" THEN "reserve_info_income"
+      # 아래부터는 query_string LIKE "reservationType%" 가 들어가야 하지만 알 수 없는 이유로 query string이 없는 경우가 있다.
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations/%" AND event_name = "web_click"  AND component_name = "ACCEPT_RIDE_RESERVATION" THEN "reserve_info_reserve_click"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_click"  AND component_name = "CONFIRM" THEN "reserve_info_reserve_ok_click"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations%" AND event_name = "web_click"  AND component_name = "CANCEL" THEN "reserve_info_reserve_no_click"
+      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations/%" AND event_name = "web_view_impression"  THEN "reserve_info_error"
+    END) AS call_list_event_name,
+    event_datetime,
+    query_string,
+    page_location,
+    component_name,
+    SUBSTR(SPLIT(query_string, "&")[SAFE_ORDINAL(1)] , STRPOS(SPLIT(query_string, "&")[SAFE_ORDINAL(1)],"=")+1, LENGTH(SPLIT(query_string, "&")[SAFE_ORDINAL(1)])) AS tab,
+    SUBSTR(SPLIT(query_string, "&")[SAFE_ORDINAL(2)] , STRPOS(SPLIT(query_string, "&")[SAFE_ORDINAL(2)],"=")+1, LENGTH(SPLIT(query_string, "&")[SAFE_ORDINAL(2)])) AS sort,
+    SUBSTR(SPLIT(query_string, "&")[SAFE_ORDINAL(3)] , STRPOS(SPLIT(query_string, "&")[SAFE_ORDINAL(3)],"=")+1, LENGTH(SPLIT(query_string, "&")[SAFE_ORDINAL(3)])) AS order_rule,
+    (CASE 
+      WHEN reservation_id IS NOT NULL THEN reservation_id 
+      WHEN reservation_id IS NULL AND component_name IN ("ACCEPT_RIDE_RESERVATION", "CONFIRM", "CANCEL") THEN REPLACE(page_location,"https://web-driver-web.tadatada.com/reservations/","")
+    END) AS reservation_id,
+    error_code,
+    IF(
+      DATETIME_DIFF(event_datetime, LAG(event_datetime) OVER (PARTITION BY user_id ORDER BY event_datetime) , SECOND) / 60 > 20 
+      OR LAG(event_datetime) OVER (PARTITION BY user_id ORDER BY event_datetime) IS NULL
+      OR LAG(event_name) OVER (PARTITION BY user_id ORDER BY event_datetime) ="web_page_back", True, False) AS is_new_session,
+    IF(SUBSTR(SPLIT(query_string, "&")[SAFE_ORDINAL(2)] , STRPOS(SPLIT(query_string, "&")[SAFE_ORDINAL(2)],"=")+1, LENGTH(SPLIT(query_string, "&")[SAFE_ORDINAL(2)])) IS NOT NULL, True,False) AS is_list_view,
+    ga_session_id
+  FROM web_firebase 
+  WHERE page_location LIKE "https://web-driver-web.tadatada.com/reservations%"
+),
+
+sessionize_web_raw AS (
+  SELECT
+    * EXCEPT(session_rn,list_rn),
+    MAX(session_rn) OVER (PARTITION BY user_id ORDER BY event_datetime ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS session_id,
+    MAX(list_rn) OVER (PARTITION BY user_id ORDER BY event_datetime ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS list_id,
+  FROM (
+    SELECT 
+      * EXCEPT(is_new_session,is_list_view), 
+      IF(is_new_session, ROW_NUMBER() OVER (PARTITION BY user_id, is_new_session ORDER BY event_datetime), NULL) AS session_rn,
+      IF(is_list_view, ROW_NUMBER() OVER (PARTITION BY user_id, is_list_view ORDER BY event_datetime), NULL) AS list_rn
+    FROM web_raw
+  )
+  WHERE user_id IS NOT NULL
+  AND call_list_event_name IS NOT NULL #web_page_back 은 불필요
+),
+
+pad_query_string AS (
+  SELECT
+    date_kr,
+    user_id,
+    CONCAT(session_id,user_id) AS session_id,
+    event_name,
+    call_list_event_name,
+    event_datetime,
+    -- page_location,
+    -- query_string,
+    component_name,
+    tab,
+    MAX(sort) OVER (PARTITION BY user_id, list_id) AS sort,
+    MAX(order_rule) OVER (PARTITION BY user_id, list_id) AS order_rule,
+    reservation_id,
+    error_code,
+  FROM sessionize_web_raw
+),
+
+base AS (
+  SELECT 
+    date_kr,
+    user_id,
+    CONCAT(session_id,user_id) AS session_id,
+    event_name,
+    call_list_event_name,
+    event_datetime,
+    -- page_location,
+    -- query_string,
+    component_name,
+    tab,
+    sort,
+    order_rule,
+    reservation_id,
+    IF(call_list_event_name = "reserve_info_reserve_ok_click", True,False) AS reserved,
+    IF(sort != LAG(sort) OVER (PARTITION BY CONCAT(session_id,user_id) ORDER BY event_datetime) OR LAG(sort) OVER (PARTITION BY CONCAT(session_id,user_id) ORDER BY event_datetime) IS NULL, True, False) AS is_changed_sort,
+    error_code,
+  FROM pad_query_string
+),
+
+sym_1_ AS (
+  SELECT
+    date_kr,
+    sort_list,
+    COUNT(DISTINCT session_id) AS session_cnt,
+  FROM (
+    SELECT
+      date_kr,
+      session_id,
+      STRING_AGG(sort, "-") AS sort_list,
+    FROM base
+    WHERE is_changed_sort
+    GROUP BY 1, 2
+  )
+  GROUP BY date_kr, sort_list
+)
+
+SELECT * FROM sym_1_
