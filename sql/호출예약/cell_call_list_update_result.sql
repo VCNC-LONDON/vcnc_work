@@ -54,6 +54,7 @@ web_raw AS (
     user_id,  
     event_name,
     (CASE
+      WHEN page_location = "https://web-driver-web.tadatada.com/reservations" AND event_name = "web_click" AND component_name = "RIDE_HISTORY" THEN "ride_history_income"
       WHEN page_location = "https://web-driver-web.tadatada.com/reservations" AND event_name = "web_page_view" THEN "call_list_income"
       WHEN page_location = "https://web-driver-web.tadatada.com/reservations" AND event_name = "web_click" AND component_name = "FILTER" THEN "filter_click"
       WHEN page_location = "https://web-driver-web.tadatada.com/reservations" AND event_name = "web_click" AND component_name = "RECOMMEND_ASC" THEN "filter_recommend_click"
@@ -61,16 +62,19 @@ web_raw AS (
       WHEN page_location = "https://web-driver-web.tadatada.com/reservations" AND event_name = "web_click" AND component_name = "SURGE_ASC" THEN "filter_surge_click"
       WHEN page_location = "https://web-driver-web.tadatada.com/reservations" AND event_name = "web_click" AND component_name = "REFRESH" THEN "call_list_refresh_click"
       WHEN page_location = "https://web-driver-web.tadatada.com/reservations" AND event_name = "web_click" AND component_name = "RESERVATION_CARD" THEN "reserve_select_click"
+      WHEN page_location = "https://web-driver-web.tadatada.com/reservations" AND event_name = "web_click" AND component_name = "APP_BAR_HELP_BUTTON" THEN "call_list_help_click"
       WHEN page_location = "https://web-driver-web.tadatada.com/reservations" AND event_name = "web_view_impression" THEN "reserve_select_error"
       WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations/%" AND event_name = "web_page_view" THEN "reserve_info_income"
       WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations/%" AND event_name = "web_click" AND query_string LIKE "reservationType%" AND component_name = "ACCEPT_RIDE_RESERVATION" THEN "reserve_info_reserve_click"
-      WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations/%" AND event_name = "web_click" AND query_string LIKE "reservationType%" AND component_name IN ("CONFIRM","CANCEL") THEN "reserve_info_reserve_confirm_click"
+      -- WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations/%" AND event_name = "web_click" AND query_string LIKE "reservationType%" AND component_name IN ("CONFIRM","CANCEL") THEN "reserve_info_reserve_confirm_click"
       WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations/%" AND event_name = "web_click" AND query_string LIKE "reservationType%" AND component_name = "CONFIRM" THEN "reserve_info_reserve_ok_click"
       WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations/%" AND event_name = "web_click" AND query_string LIKE "reservationType%" AND component_name = "CANCEL" THEN "reserve_info_reserve_no_click"
       WHEN page_location LIKE "https://web-driver-web.tadatada.com/reservations/%" AND event_name = "web_view_impression" AND query_string LIKE "reservationType%" THEN "reserve_info_error"
     END) AS call_list_event_name,
     event_datetime,
     query_string,
+    page_location,
+    component_name,
     reservation_id,
     error_code,
     IF(DATETIME_DIFF(event_datetime, LAG(event_datetime) OVER (PARTITION BY user_id ORDER BY event_datetime) , SECOND) / 60 > 15 OR LAG(event_datetime) OVER (PARTITION BY user_id ORDER BY event_datetime) IS NULL , True, False) AS is_new_session,
@@ -92,4 +96,4 @@ sessionize_web_raw AS (
 )
 
 -- SELECT DISTINCT view_name FROM client_firebase
-SELECT * FROM sessionize_web_raw ORDER BY user_id, event_datetime
+SELECT * FROM sessionize_web_raw where call_list_event_name is null ORDER BY user_id, event_datetime
