@@ -185,7 +185,7 @@ class BigqueryLoader:
             bigquery_info = target_model.get_bigquery_info()
             sql = f"""
             SELECT
-                DISTICNT h3_l7,
+                DISTINCT h3_l7,
                 lat,
                 lon
             FROM {bigquery_info["dataset"]}.{bigquery_info["table"]}
