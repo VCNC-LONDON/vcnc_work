@@ -25,6 +25,12 @@ custom_logger.setLevel(logging.INFO)
 
 lcc = LCC()
 
+class APIrequestError(Exception):
+    def __init__(self, err_msg : str):
+        self.err_msg = err_msg
+    
+    def __str__(self):
+        return self.err_msg
 
 class BigqueryLoader:
     def __init__(
@@ -114,10 +120,19 @@ class BigqueryLoader:
                     )
 
             data = response.json()
-            data["response"]["body"]["h3_l7"] = h3
-            data["response"]["body"]["lat"] = lat
-            data["response"]["body"]["lon"] = lon
-            data["response"]["body"]["updated_at_kr"] = request_datetime
+
+            if int(data["response"]["header"]["resultCode"]) == 0 : 
+                data["response"]["body"]["h3_l7"] = h3
+                data["response"]["body"]["lat"] = lat
+                data["response"]["body"]["lon"] = lon
+                data["response"]["body"]["updated_at_kr"] = request_datetime
+            
+            else :
+                err_code = data["response"]["header"]["resultCode"]
+                err_msg = data["response"]["header"]["resultMsg"]
+                raise APIrequestError(
+                    f"기상청 예보 조회 API Error : {err_code} ! {err_msg} "
+                    )
 
         except json.JSONDecodeError as decodeerr:
             logging.getLogger(LOGGER_NAME).error(
@@ -125,10 +140,18 @@ class BigqueryLoader:
             )
             data = None
             raise
+        except APIrequestError as apierr:
+            logging.getLogger(LOGGER_NAME).error(
+                f"request_api() failed: request {h3}({lat}, {lon}) has been failed...error {apierr}"
+            )
+            data = None
+            raise
+
         except Exception as err:
             logging.getLogger(LOGGER_NAME).error(
                 f"request_api() failed: request {h3}({lat}, {lon}) has been failed...error {err}"
             )
+            data = None
             raise
 
         return data
