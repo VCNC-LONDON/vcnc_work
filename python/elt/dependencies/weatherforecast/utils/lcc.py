@@ -1,5 +1,6 @@
 import math
 
+
 class LCC:
     """
     Lambert Conformal Conic Projection
@@ -60,6 +61,15 @@ class LCC:
         self.ro = ro
 
     def to_grid(self, lat: float, lon: float) -> tuple:
+        """(위도,경도)를 Lambert Conformal Conic Projection 하여 (x,y) 로 변환
+
+        Args:
+            lat (float): 변환하려는 위도
+            lon (float): 변환하려는 경도
+
+        Returns:
+            tuple: Lambert Conformal Conic grid x, y 좌표
+        """
         ra = math.tan(LCC.PI * 0.25 + lat * LCC.DEGRAD * 0.5)
         ra = self.re * self.sf / pow(ra, self.sn)
         theta = lon * LCC.DEGRAD - self.olon
@@ -75,6 +85,15 @@ class LCC:
         return x, y
 
     def to_map(self, x: int, y: int) -> tuple:
+        """(x,y)를 Lambert Conformal Conic Projection 하여 (위도,경도) 로 변환
+
+        Args:
+            x (int): x축 좌표
+            y (int): y축 좌표
+
+        Returns:
+            tuple: WGS 위도, 경도
+        """
         x = x - 1
         y = y - 1
         xn = x - self.xo
