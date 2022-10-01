@@ -1,6 +1,5 @@
 import math
 
-
 class LCC:
     """
     Lambert Conformal Conic Projection

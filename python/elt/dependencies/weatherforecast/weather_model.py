@@ -1,4 +1,4 @@
-class WeatherForecastModel:
+class WeatherModel:
     def __init__(self):
         pass
 
