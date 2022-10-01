@@ -14,13 +14,12 @@ default_args = {
     "retries": 1,
     "retry_delay": timedelta(minutes=30),
     "gcp_conn_id": "google_cloud_default",
-    "zendesk_conn_id": "zendesk_conn",
 }
 
 with DAG(
     dag_id="Extract-hyper-shorterm-weather-forecast",
     description="load hypershorterm weather forecast data to BigQuery",
-    start_date=datetime(2022, 9, 30),
+    start_date=datetime(2022, 10, 2),
     schedule_interval="50 0,2,4,6,8,10,12,14,18 * * *",
     catchup=False,
     max_active_runs=1,
