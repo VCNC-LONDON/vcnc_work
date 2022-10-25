@@ -1,4 +1,7 @@
-with 
+# 얘도 참조하는 모든 테이블들에... 파티셔닝이 없어서 항상 full scan 이다.. (비용 줄이기가 안된다)
+# record로 쌓는거니까 적어도 적재하는 결과만큼은..파티셔닝, 클러스터링 해놓고 쓸 수 있게 하자..
+
+WITH 
 payment_transaction AS (
     SELECT
         p.id AS payment_id,
@@ -82,6 +85,7 @@ SELECT
     DATE(coalesce(r.dropped_off_at, r.cancelled_at), "Asia/Seoul") AS dropped_off_kst_date, -- 영업일자
     r.id AS ride_id, -- 라이드ID
     rr.id AS ride_reservation_id, -- 호출예약ID
+    i.trip_id,
     i.service_fee_promotion_type, -- LITE_2020_SEOUL_1 같은 값이 들어감, eddie 시트에는 프로모션 적용 여부라고 적혀 있지만 promotion_type 을 적는다, 프로모션적용여부
     IF(i.driver_id IS NOT NULL, da.name, '없음') AS agency_name, -- 운수사
     IF(i.driver_id IS NOT NULL, d.name, '없음') AS driver_name, -- 드라이버 이름
